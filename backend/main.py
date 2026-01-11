@@ -1,40 +1,56 @@
-from receipt_scanner import scan_receipt, parse_grocery_items
-from grocery_logic import (
-    create_grocery_list,
-    check_expiration,
-    update_grocery_list
-)
-import json
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import os
-import datetime
 
-BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+from receipt_scanner import scan_receipt
+from grocery_logic import create_grocery_list, check_expiration
 
-RECEIPT_PATH = os.path.join(BASE_DIR, "receipts", "sample_receipt.jpeg")
-DATA_PATH = os.path.join(BASE_DIR, "data", "grocery_list.json")
+app = Flask(__name__)
+CORS(app)
 
-def main():
-    print("📸 Scanning receipt...")
-    receipt_text = scan_receipt(RECEIPT_PATH)
+# Where uploaded receipts will be stored
+UPLOAD_FOLDER = "receipts"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-    items = parse_grocery_items(receipt_text)
-    grocery_list = create_grocery_list(items)
+@app.route("/analyze", methods=["POST"])
+def analyze():
+    # 1. Check if file was sent
+    if "image" not in request.files:
+        return jsonify({"error": "No image uploaded"}), 400
 
-    expiring_items = check_expiration(grocery_list)
+    file = request.files["image"]
 
-    for item in expiring_items:
-        response = input(
-            f"{item['name']} expires on {item['expiration']}. Used it? (yes/no): "
-        ).strip().lower()
+    if file.filename == "":
+        return jsonify({"error": "Empty filename"}), 400
 
-        if response == "yes":
-            grocery_list = update_grocery_list(grocery_list, item["name"])
+    # 2. Save the uploaded image
+    filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+    file.save(filepath)
 
-    os.makedirs(os.path.dirname(DATA_PATH), exist_ok=True)
-    with open(DATA_PATH, "w") as f:
-        json.dump(grocery_list, f, indent=4)
+    print("📄 Saved receipt to:", filepath)
 
-    print("✅ Grocery list updated and saved!")
+    try:
+        # 3. Run OCR on the real saved file
+        items = scan_receipt(filepath)
+
+        # items should look like:
+        # [{"name": "Milk", "quantity": 1}, {"name": "Bread", "quantity": 1}]
+
+        # 4. Create grocery list with expiration dates
+        grocery_list = create_grocery_list(items)
+
+        # 5. Check which are expiring soon
+        alerts = check_expiration(grocery_list)
+
+        return jsonify({
+            "food": grocery_list,
+            "alerts": alerts
+        })
+
+    except Exception as e:
+        print("OCR ERROR:", e)
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
-    main()
+    app.run(debug=True, port=5000)
